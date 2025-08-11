@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "express": "^4.17.1",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "@supabase/supabase-js": "^2.39.0"
   },
   "devDependencies": {
     "typescript": "^4.4.4",
