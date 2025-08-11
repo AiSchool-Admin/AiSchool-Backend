@@ -30,7 +30,7 @@ app.get('/', (req, res) => {
  */
 app.post('/api/curriculums', async (req, res) => {
   console.log('Received request to ingest curriculum.');
-
+  
   const { country_code, curriculum_data } = req.body;
 
   if (!country_code || !curriculum_data) {
