@@ -12,7 +12,6 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
 
 if (supabaseUrl && supabaseServiceKey) {
     supabase = createClient(supabaseUrl, supabaseServiceKey);
-    console.log("Supabase client initialized.");
 } else {
     console.error("CRITICAL: Supabase environment variables are missing.");
 }
@@ -21,7 +20,7 @@ if (supabaseUrl && supabaseServiceKey) {
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// --- Authentication Middleware (The "Security Guard") ---
+// --- Authentication Middleware ---
 const authenticate = async (req: Request, res: Response, next: NextFunction) => {
     if (!supabase) return res.status(500).json({ error: "Server not initialized." });
     const authHeader = req.headers.authorization;
@@ -40,12 +39,7 @@ const authenticate = async (req: Request, res: Response, next: NextFunction) => 
 // --- API Endpoints ---
 
 // -- Unprotected Endpoints --
-
-// Health check for the main page
-app.get('/', (req, res) => {
-  res.status(200).send('AiSchool Backend is running!');
-});
-
+app.get('/', (req, res) => res.status(200).send('AiSchool Backend is running!'));
 app.get('/api/debug', (req, res) => res.json({ serverStatus: "OK" }));
 
 app.post('/api/login', async (req, res) => {
@@ -71,6 +65,24 @@ app.post('/api/register', async (req, res) => {
 });
 
 // -- Protected Endpoints --
+
+/**
+ * FR-06: Browse Curriculum
+ * Retrieves all available curriculums for a logged-in user.
+ */
+app.get('/api/curriculums', authenticate, async (req, res) => {
+    if (!supabase) return res.status(500).json({ error: "Server not initialized." });
+
+    const { data, error } = await supabase
+        .from('curriculums')
+        .select('id, country_code, data');
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.status(200).json(data);
+});
 
 app.put('/api/profiles/preferences', authenticate, async (req, res) => {
     if (!supabase) return res.status(500).json({ error: "Server not initialized." });
