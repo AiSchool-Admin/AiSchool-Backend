@@ -24,6 +24,7 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
+// --- Explicit CORS Configuration ---
 const corsOptions = {
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -34,7 +35,7 @@ app.options('*', cors(corsOptions));
 
 app.use(express.json());
 
-// --- (Helper functions and other endpoints remain the same) ---
+// --- Helper functions and middleware ---
 const findLessonById = (curriculums: any[], lessonId: string): any | null => {
     for (const curriculum of curriculums) {
         const subjects = curriculum.data?.subjects || [];
@@ -69,6 +70,8 @@ const authenticate = (req: Request, res: Response, next: NextFunction) => {
   }
 };
 
+
+// --- API Endpoints ---
 app.get('/', (req, res) => {
   res.status(200).send('AiSchool Backend is running!');
 });
@@ -121,7 +124,6 @@ app.get('/api/curriculums', authenticate, async (req, res) => {
     }
 });
 
-// --- UPDATED to return keywords ---
 app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
     const { lessonId } = req.params;
     const { userId } = (req as any).user;
@@ -161,7 +163,6 @@ app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
         const firstBlock = aiResponse.content[0];
         if (firstBlock.type === 'text') {
             const lessonContent = firstBlock.text;
-            // Return both the content and the keywords
             res.status(200).json({ content: lessonContent, keywords: lessonDetails.keywords || [] });
         } else {
             throw new Error("AI response was not in the expected text format.");
@@ -173,34 +174,6 @@ app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
     }
 });
 
-// --- NEW ENDPOINT FOR TUTOR MODE ---
-app.post('/api/explain-term', authenticate, async (req, res) => {
-    const { term } = req.body;
-    if (!term) {
-        return res.status(400).json({ error: 'Term is required.' });
-    }
-
-    try {
-        const prompt = `Explain the term "${term}" in a simple, concise way for a high school student.`;
-        
-        // Using a faster, cheaper model for this simple task as per FR-19
-        const aiResponse = await anthropic.messages.create({
-            model: "claude-3-haiku-20240307", 
-            max_tokens: 200,
-            messages: [{ role: "user", content: prompt }],
-        });
-
-        const explanation = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : "Sorry, I could not generate an explanation.";
-        res.status(200).json({ explanation });
-
-    } catch (error) {
-        console.error(`Error explaining term "${term}":`, error);
-        res.status(500).json({ error: 'Failed to explain term.' });
-    }
-});
-
-
-// --- (Other endpoints like /questions, /update-skill, /homework/** remain the same) ---
 app.post('/api/lessons/:lessonId/questions', authenticate, async (req, res) => {
     const { lessonId } = req.params;
 
@@ -213,22 +186,8 @@ app.post('/api/lessons/:lessonId/questions', authenticate, async (req, res) => {
 
         const prompt = `
             Based on the lesson "${lessonDetails.name}" with objectives "${lessonDetails.objectives.join(', ')}", generate 3 multiple-choice questions to test understanding.
-            For each question, provide:
-            - The question text.
-            - A list of 4 possible options.
-            - The index (0-3) of the correct option.
-
+            For each question, provide: The question text, a list of 4 possible options, and the index (0-3) of the correct option.
             Return the output as a single, valid JSON object with a key "questions" which is an array of question objects.
-            Example format:
-            {
-              "questions": [
-                {
-                  "questionText": "What is the capital of France?",
-                  "options": ["London", "Berlin", "Paris", "Madrid"],
-                  "correctOptionIndex": 2
-                }
-              ]
-            }
         `;
 
         const aiResponse = await anthropic.messages.create({
@@ -238,7 +197,6 @@ app.post('/api/lessons/:lessonId/questions', authenticate, async (req, res) => {
         });
 
         const responseText = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : '';
-
         const jsonStartIndex = responseText.indexOf('{');
         const jsonEndIndex = responseText.lastIndexOf('}') + 1;
 
@@ -273,7 +231,6 @@ app.post('/api/lessons/:lessonId/update-skill', authenticate, async (req, res) =
     try {
         const userResult = await pool.query('SELECT skill_profile FROM users WHERE id = $1', [userId]);
         const skillProfile = userResult.rows[0]?.skill_profile || {};
-
         const newMastery = totalQuestions > 0 ? score / totalQuestions : 0;
 
         skillProfile[lessonId] = {
@@ -283,7 +240,6 @@ app.post('/api/lessons/:lessonId/update-skill', authenticate, async (req, res) =
         };
 
         await pool.query('UPDATE users SET skill_profile = $1 WHERE id = $2', [JSON.stringify(skillProfile), userId]);
-
         res.status(200).json({ message: 'Skill profile updated successfully.' });
 
     } catch (error) {
@@ -350,11 +306,8 @@ app.post('/api/homework/submit', authenticate, upload.single('homeworkImage'), a
             [userId]
         );
         const jobId = result.rows[0].id;
-
         res.status(202).json({ message: 'Homework submission accepted.', jobId: jobId });
-
         processHomeworkJob(jobId, req.file.buffer, req.file.mimetype, userId);
-
     } catch (error) {
         console.error("Error submitting homework:", error);
         res.status(500).json({ error: 'Failed to submit homework problem.' });
@@ -384,6 +337,29 @@ app.get('/api/homework/status/:jobId', authenticate, async (req, res) => {
     }
 });
 
+app.post('/api/explain-term', authenticate, async (req, res) => {
+    const { term } = req.body;
+    if (!term) {
+        return res.status(400).json({ error: 'Term is required.' });
+    }
+
+    try {
+        const prompt = `Explain the term "${term}" in a simple, concise way for a high school student.`;
+        
+        const aiResponse = await anthropic.messages.create({
+            model: "claude-3-haiku-20240307", 
+            max_tokens: 200,
+            messages: [{ role: "user", content: prompt }],
+        });
+
+        const explanation = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : "Sorry, I could not generate an explanation.";
+        res.status(200).json({ explanation });
+
+    } catch (error) {
+        console.error(`Error explaining term "${term}":`, error);
+        res.status(500).json({ error: 'Failed to explain term.' });
+    }
+});
 
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
