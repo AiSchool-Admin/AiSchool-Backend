@@ -5,9 +5,14 @@ const { Pool } = pkg;
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import Anthropic from '@anthropic-ai/sdk';
+import multer from 'multer';
+import fs from 'fs';
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// --- Multer setup for file uploads ---
+const upload = multer({ dest: 'uploads/' });
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -23,6 +28,7 @@ const anthropic = new Anthropic({
 app.use(cors());
 app.use(express.json());
 
+// --- (Existing helper functions and middleware remain the same) ---
 const findLessonById = (curriculums: any[], lessonId: string): any | null => {
     for (const curriculum of curriculums) {
         const subjects = curriculum.data?.subjects || [];
@@ -57,8 +63,7 @@ const authenticate = (req: Request, res: Response, next: NextFunction) => {
   }
 };
 
-// --- Existing Endpoints (Login, Register, etc.) remain the same ---
-
+// --- (Existing API endpoints remain the same) ---
 app.get('/', (req, res) => {
   res.status(200).send('AiSchool Backend is running!');
 });
@@ -161,7 +166,6 @@ app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
     }
 });
 
-// --- NEW ENDPOINT FOR GENERATING QUIZ QUESTIONS ---
 app.post('/api/lessons/:lessonId/questions', authenticate, async (req, res) => {
     const { lessonId } = req.params;
 
@@ -200,7 +204,6 @@ app.post('/api/lessons/:lessonId/questions', authenticate, async (req, res) => {
 
         const responseText = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : '';
         
-        // --- ROBUST JSON PARSING TO FIX THE 500 ERROR ---
         const jsonStartIndex = responseText.indexOf('{');
         const jsonEndIndex = responseText.lastIndexOf('}') + 1;
 
@@ -220,6 +223,102 @@ app.post('/api/lessons/:lessonId/questions', authenticate, async (req, res) => {
     } catch (error) {
         console.error(`Error generating questions for ${lessonId}:`, error);
         res.status(500).json({ error: 'Failed to generate questions.' });
+    }
+});
+
+app.post('/api/lessons/:lessonId/update-skill', authenticate, async (req, res) => {
+    const { lessonId } = req.params;
+    const { score, totalQuestions } = req.body;
+    const { userId } = (req as any).user;
+
+    if (score === undefined || totalQuestions === undefined) {
+        return res.status(400).json({ error: 'Score and totalQuestions are required.' });
+    }
+
+    try {
+        const userResult = await pool.query('SELECT skill_profile FROM users WHERE id = $1', [userId]);
+        const skillProfile = userResult.rows[0]?.skill_profile || {};
+
+        const newMastery = totalQuestions > 0 ? score / totalQuestions : 0;
+
+        skillProfile[lessonId] = {
+            masteryScore: newMastery,
+            confidence: newMastery > 0.7 ? 'high' : newMastery > 0.4 ? 'medium' : 'low',
+            lastAttempt: new Date().toISOString(),
+        };
+
+        await pool.query('UPDATE users SET skill_profile = $1 WHERE id = $2', [JSON.stringify(skillProfile), userId]);
+
+        res.status(200).json({ message: 'Skill profile updated successfully.' });
+
+    } catch (error) {
+        console.error(`Error updating skill for lesson ${lessonId}:`, error);
+        res.status(500).json({ error: 'Failed to update skill profile.' });
+    }
+});
+
+// --- NEW ENDPOINT FOR HOMEWORK SOLVER ---
+app.post('/api/homework/solve', authenticate, upload.single('homeworkImage'), async (req, res) => {
+    const { userId } = (req as any).user;
+
+    if (!req.file) {
+        return res.status(400).json({ error: 'No image file uploaded.' });
+    }
+
+    try {
+        // Fetch user preferences
+        const userResult = await pool.query('SELECT preferences FROM users WHERE id = $1', [userId]);
+        const learningPreferences = userResult.rows[0]?.preferences || { style: "simplified" };
+        
+        // Read the image file and convert to base64
+        const imageBuffer = fs.readFileSync(req.file.path);
+        const imageBase64 = imageBuffer.toString('base64');
+        const imageMediaType = req.file.mimetype;
+
+        // Construct the prompt for the multimodal AI
+        const prompt = `
+            You are an expert tutor. A student has sent a picture of a homework problem.
+            Provide a clear, step-by-step solution to the problem in the image.
+            Explain the solution in a ${learningPreferences.style} style.
+            Output your response in simple Markdown.
+        `;
+
+        const aiResponse = await anthropic.messages.create({
+            model: "claude-3-5-sonnet-20240620",
+            max_tokens: 2048,
+            messages: [
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "image",
+                            source: {
+                                type: "base64",
+                                media_type: imageMediaType,
+                                data: imageBase64,
+                            },
+                        },
+                        {
+                            type: "text",
+                            text: prompt,
+                        }
+                    ],
+                }
+            ],
+        });
+
+        const solution = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : "Sorry, I couldn't find a text solution in the response.";
+
+        res.status(200).json({ solution });
+
+    } catch (error) {
+        console.error("Error solving homework:", error);
+        res.status(500).json({ error: 'Failed to solve homework problem.' });
+    } finally {
+        // Clean up the uploaded file
+        if (req.file) {
+            fs.unlinkSync(req.file.path);
+        }
     }
 });
 
