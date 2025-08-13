@@ -24,7 +24,15 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-app.use(cors());
+// --- NEW, MORE EXPLICIT CORS CONFIGURATION ---
+const corsOptions = {
+  origin: '*', // Allow all domains
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Allow all standard methods
+  allowedHeaders: ['Content-Type', 'Authorization'], // Explicitly allow these headers
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // Enable pre-flight requests for all routes
+
 app.use(express.json());
 
 // --- (Existing helper functions and middleware are unchanged) ---
@@ -301,8 +309,6 @@ const processHomeworkJob = async (jobId: string, imageBuffer: Buffer, imageMedia
 
     } catch (error: any) {
         console.error(`Processing failed for job ${jobId}:`, error);
-        // --- THIS IS THE CHANGE ---
-        // Save the specific error message to the database
         const failureReason = error.message || "An unknown error occurred during AI processing.";
         await pool.query("UPDATE homework_jobs SET status = 'failed', failure_reason = $1 WHERE id = $2", [failureReason, jobId]);
     }
@@ -338,8 +344,6 @@ app.get('/api/homework/status/:jobId', authenticate, async (req, res) => {
     const { userId } = (req as any).user;
 
     try {
-        // --- THIS IS THE CHANGE ---
-        // Also fetch the failure_reason
         const result = await pool.query(
             'SELECT status, solution, failure_reason FROM homework_jobs WHERE id = $1 AND user_id = $2',
             [jobId, userId]
