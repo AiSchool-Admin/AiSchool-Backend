@@ -12,7 +12,8 @@
     "cors": "^2.8.5",
     "pg": "^8.11.5",
     "bcryptjs": "^2.4.3",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "@anthropic-ai/sdk": "^0.22.0"
   },
   "devDependencies": {
     "typescript": "^5.4.5",
