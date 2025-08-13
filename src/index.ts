@@ -95,7 +95,7 @@ app.post('/api/login', async (req, res) => {
     }
     const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET || 'supersecretkey', { expiresIn: '1h' });
     res.json({ message: 'Login successful', token });
-  } catch (error).ts {
+  } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error.' });
   }
