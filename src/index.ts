@@ -124,6 +124,7 @@ app.get('/api/curriculums', authenticate, async (req, res) => {
     }
 });
 
+// --- UPDATED to dynamically generate keywords ---
 app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
     const { lessonId } = req.params;
     const { userId } = (req as any).user;
@@ -144,28 +145,48 @@ app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
         const skillProfile = user.skill_profile || {};
         const masteryScore = skillProfile[lessonId]?.masteryScore || 0.0;
 
+        // --- THIS IS THE NEW, SMARTER PROMPT ---
         const prompt = `
             Role: You are an expert teacher named ${learningPreferences.tutorPersona.name}.
             Persona: Explain in a ${learningPreferences.style} style.
             Context: The student has a current mastery level of ${masteryScore * 100}% in this lesson.
-            Task: Provide a clear and comprehensive explanation for the lesson "${lessonDetails.name}".
-            The lesson's main objectives are: ${lessonDetails.objectives.join(', ')}.
-            Focus on the core concepts and use simple analogies if possible.
-            Output Format: Provide the explanation in simple Markdown.
+            Task: First, provide a clear and comprehensive explanation for the lesson "${lessonDetails.name}". The lesson's main objectives are: ${lessonDetails.objectives.join(', ')}.
+            Second, identify the most important keywords or terms from the explanation you just wrote.
+            
+            Output Format: Return a single, valid JSON object. It must have two keys:
+            1. "content": A string containing the full lesson explanation in simple Markdown.
+            2. "keywords": An array of strings, where each string is an important keyword you identified.
+            
+            Example:
+            {
+              "content": "## What is Photosynthesis?\\nPhotosynthesis is the process plants use to convert light energy into chemical energy...",
+              "keywords": ["Photosynthesis", "light energy", "chemical energy"]
+            }
         `;
 
         const aiResponse = await anthropic.messages.create({
             model: "claude-3-5-sonnet-20240620",
-            max_tokens: 1024,
+            max_tokens: 1500,
             messages: [{ role: "user", content: prompt }],
         });
 
-        const firstBlock = aiResponse.content[0];
-        if (firstBlock.type === 'text') {
-            const lessonContent = firstBlock.text;
-            res.status(200).json({ content: lessonContent, keywords: lessonDetails.keywords || [] });
+        const responseText = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : '';
+        const jsonStartIndex = responseText.indexOf('{');
+        const jsonEndIndex = responseText.lastIndexOf('}') + 1;
+
+        if (jsonStartIndex !== -1 && jsonEndIndex > jsonStartIndex) {
+            const jsonString = responseText.substring(jsonStartIndex, jsonEndIndex);
+            try {
+                const lessonJson = JSON.parse(jsonString);
+                res.status(200).json({ 
+                    content: lessonJson.content || "No content generated.",
+                    keywords: lessonJson.keywords || [] 
+                });
+            } catch (parseError) {
+                throw new Error("AI returned malformed JSON for the lesson.");
+            }
         } else {
-            throw new Error("AI response was not in the expected text format.");
+            throw new Error("Could not find a valid JSON object in the lesson response.");
         }
 
     } catch (error) {
