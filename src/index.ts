@@ -268,7 +268,6 @@ const processHomeworkJob = async (jobId: string, imageBuffer: Buffer, imageMedia
         const learningPreferences = userResult.rows[0]?.preferences || { style: "simplified" };
         const imageBase64 = imageBuffer.toString('base64');
 
-        // --- THIS IS THE NEW, MORE ROBUST PROMPT ---
         const prompt = `
             You are an expert tutor. A student has sent a picture of their homework.
             Analyze the image and help the student.
@@ -300,9 +299,12 @@ const processHomeworkJob = async (jobId: string, imageBuffer: Buffer, imageMedia
         const solution = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : "Sorry, I couldn't find a text solution.";
         await pool.query("UPDATE homework_jobs SET status = 'completed', solution = $1 WHERE id = $2", [solution, jobId]);
 
-    } catch (error) {
+    } catch (error: any) {
         console.error(`Processing failed for job ${jobId}:`, error);
-        await pool.query("UPDATE homework_jobs SET status = 'failed' WHERE id = $1", [jobId]);
+        // --- THIS IS THE CHANGE ---
+        // Save the specific error message to the database
+        const failureReason = error.message || "An unknown error occurred during AI processing.";
+        await pool.query("UPDATE homework_jobs SET status = 'failed', failure_reason = $1 WHERE id = $2", [failureReason, jobId]);
     }
 };
 
@@ -336,8 +338,10 @@ app.get('/api/homework/status/:jobId', authenticate, async (req, res) => {
     const { userId } = (req as any).user;
 
     try {
+        // --- THIS IS THE CHANGE ---
+        // Also fetch the failure_reason
         const result = await pool.query(
-            'SELECT status, solution FROM homework_jobs WHERE id = $1 AND user_id = $2',
+            'SELECT status, solution, failure_reason FROM homework_jobs WHERE id = $1 AND user_id = $2',
             [jobId, userId]
         );
 
@@ -346,7 +350,7 @@ app.get('/api/homework/status/:jobId', authenticate, async (req, res) => {
         }
 
         const job = result.rows[0];
-        res.status(200).json({ status: job.status, solution: job.solution });
+        res.status(200).json({ status: job.status, solution: job.solution, failureReason: job.failure_reason });
 
     } catch (error) {
         console.error(`Error fetching status for job ${jobId}:`, error);
