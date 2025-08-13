@@ -94,6 +94,23 @@ app.get('/api/curriculums', authenticate, async (req, res) => {
     }
 });
 
+app.post('/api/curriculums', authenticate, async (req, res) => {
+    const { country_code, data } = req.body;
+    if (!country_code || !data) {
+        return res.status(400).json({ error: 'Missing country_code or data.' });
+    }
+    try {
+        const result = await pool.query(
+            'INSERT INTO curriculums(country_code, data) VALUES($1, $2) RETURNING id',
+            [country_code, data]
+        );
+        res.status(201).json({ message: 'Curriculum added successfully.', curriculum: result.rows[0] });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Failed to add curriculum.' });
+    }
+});
+
 
 // Start the server
 app.listen(port, () => {
