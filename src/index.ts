@@ -6,13 +6,13 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import Anthropic from '@anthropic-ai/sdk';
 import multer from 'multer';
-import fs from 'fs';
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// --- Multer setup for file uploads ---
-const upload = multer({ dest: 'uploads/' });
+// --- Multer setup to store files in memory ---
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -257,7 +257,7 @@ app.post('/api/lessons/:lessonId/update-skill', authenticate, async (req, res) =
     }
 });
 
-// --- NEW ENDPOINT FOR HOMEWORK SOLVER ---
+// --- UPDATED HOMEWORK SOLVER ENDPOINT ---
 app.post('/api/homework/solve', authenticate, upload.single('homeworkImage'), async (req, res) => {
     const { userId } = (req as any).user;
 
@@ -270,8 +270,8 @@ app.post('/api/homework/solve', authenticate, upload.single('homeworkImage'), as
         const userResult = await pool.query('SELECT preferences FROM users WHERE id = $1', [userId]);
         const learningPreferences = userResult.rows[0]?.preferences || { style: "simplified" };
         
-        // Read the image file and convert to base64
-        const imageBuffer = fs.readFileSync(req.file.path);
+        // --- Get image data directly from the buffer in memory ---
+        const imageBuffer = req.file.buffer;
         const imageBase64 = imageBuffer.toString('base64');
         const imageMediaType = req.file.mimetype;
 
@@ -294,8 +294,6 @@ app.post('/api/homework/solve', authenticate, upload.single('homeworkImage'), as
                             type: "image",
                             source: {
                                 type: "base64",
-                                // --- THIS IS THE FIX ---
-                                // Add a type assertion to satisfy TypeScript
                                 media_type: imageMediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
                                 data: imageBase64,
                             },
@@ -316,11 +314,6 @@ app.post('/api/homework/solve', authenticate, upload.single('homeworkImage'), as
     } catch (error) {
         console.error("Error solving homework:", error);
         res.status(500).json({ error: 'Failed to solve homework problem.' });
-    } finally {
-        // Clean up the uploaded file
-        if (req.file) {
-            fs.unlinkSync(req.file.path);
-        }
     }
 });
 
