@@ -294,7 +294,9 @@ app.post('/api/homework/solve', authenticate, upload.single('homeworkImage'), as
                             type: "image",
                             source: {
                                 type: "base64",
-                                media_type: imageMediaType,
+                                // --- THIS IS THE FIX ---
+                                // Add a type assertion to satisfy TypeScript
+                                media_type: imageMediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
                                 data: imageBase64,
                             },
                         },
