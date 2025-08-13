@@ -260,9 +260,6 @@ app.post('/api/lessons/:lessonId/update-skill', authenticate, async (req, res) =
 
 // --- ASYNCHRONOUS HOMEWORK SOLVER ---
 
-// This function processes the job. In a real-world scenario, this would be
-// triggered by a message queue or a separate worker process.
-// For simplicity, we trigger it immediately after the job is created.
 const processHomeworkJob = async (jobId: string, imageBuffer: Buffer, imageMediaType: string, userId: string) => {
     try {
         await pool.query("UPDATE homework_jobs SET status = 'processing' WHERE id = $1", [jobId]);
@@ -271,11 +268,14 @@ const processHomeworkJob = async (jobId: string, imageBuffer: Buffer, imageMedia
         const learningPreferences = userResult.rows[0]?.preferences || { style: "simplified" };
         const imageBase64 = imageBuffer.toString('base64');
 
+        // --- THIS IS THE NEW, MORE ROBUST PROMPT ---
         const prompt = `
-            You are an expert tutor. A student has sent a picture of a homework problem.
-            Provide a clear, step-by-step solution to the problem in the image.
-            Explain the solution in a ${learningPreferences.style} style.
-            Output your response in simple Markdown.
+            You are an expert tutor. A student has sent a picture of their homework.
+            Analyze the image and help the student.
+            - If the image contains a question or problem, provide a clear, step-by-step solution.
+            - If the image contains explanatory text, a diagram, or a concept, summarize and explain the main ideas clearly.
+            - If you cannot understand the image, say so politely.
+            Explain everything in a ${learningPreferences.style} style and format your response using simple Markdown.
         `;
 
         const aiResponse = await anthropic.messages.create({
@@ -320,10 +320,8 @@ app.post('/api/homework/submit', authenticate, upload.single('homeworkImage'), a
         );
         const jobId = result.rows[0].id;
 
-        // Immediately respond to the user
         res.status(202).json({ message: 'Homework submission accepted.', jobId: jobId });
 
-        // Start processing the job in the background
         processHomeworkJob(jobId, req.file.buffer, req.file.mimetype, userId);
 
     } catch (error) {
