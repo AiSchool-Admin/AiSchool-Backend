@@ -19,7 +19,6 @@ const pool = new Pool({
 });
 
 // --- AI Client Initialization ---
-// This is now active. Make sure to set the ANTHROPIC_API_KEY environment variable.
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
@@ -164,10 +163,16 @@ app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
             messages: [{ role: "user", content: prompt }],
         });
         
-        const lessonContent = aiResponse.content[0].text;
-
-        // --- Step 5: Send the generated content back to the app ---
-        res.status(200).json({ content: lessonContent });
+        // --- CORRECTED LOGIC TO FIX THE BUILD ERROR ---
+        const firstBlock = aiResponse.content[0];
+        if (firstBlock.type === 'text') {
+            const lessonContent = firstBlock.text;
+            // --- Step 5: Send the generated content back to the app ---
+            res.status(200).json({ content: lessonContent });
+        } else {
+            // If the AI returns something other than text, which is an error for us.
+            throw new Error("AI response was not in the expected text format.");
+        }
 
     } catch (error) {
         console.error(`Error generating lesson for ${lessonId}:`, error);
