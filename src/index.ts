@@ -10,7 +10,6 @@ import multer from 'multer';
 const app = express();
 const port = process.env.PORT || 3000;
 
-// --- Multer setup to store files in memory ---
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
@@ -28,7 +27,7 @@ const anthropic = new Anthropic({
 app.use(cors());
 app.use(express.json());
 
-// --- (Existing helper functions and middleware remain the same) ---
+// --- (Existing helper functions and middleware are unchanged) ---
 const findLessonById = (curriculums: any[], lessonId: string): any | null => {
     for (const curriculum of curriculums) {
         const subjects = curriculum.data?.subjects || [];
@@ -52,7 +51,7 @@ const authenticate = (req: Request, res: Response, next: NextFunction) => {
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Authentication required: No token provided.' });
   }
-  
+
   const token = authHeader.split(' ')[1];
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET || 'supersecretkey');
@@ -63,7 +62,8 @@ const authenticate = (req: Request, res: Response, next: NextFunction) => {
   }
 };
 
-// --- (Existing API endpoints remain the same) ---
+
+// --- (Existing API endpoints are unchanged) ---
 app.get('/', (req, res) => {
   res.status(200).send('AiSchool Backend is running!');
 });
@@ -130,7 +130,7 @@ app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
         if (!lessonDetails) {
           return res.status(404).json({ error: 'Lesson details not found in curriculum.' });
         }
-        
+
         const user = userResult.rows[0];
         const learningPreferences = user.preferences || { style: "simplified", tutorPersona: { name: "Professor Khalid" } };
         const skillProfile = user.skill_profile || {};
@@ -151,7 +151,7 @@ app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
             max_tokens: 1024,
             messages: [{ role: "user", content: prompt }],
         });
-        
+
         const firstBlock = aiResponse.content[0];
         if (firstBlock.type === 'text') {
             const lessonContent = firstBlock.text;
@@ -182,7 +182,7 @@ app.post('/api/lessons/:lessonId/questions', authenticate, async (req, res) => {
             - The question text.
             - A list of 4 possible options.
             - The index (0-3) of the correct option.
-            
+
             Return the output as a single, valid JSON object with a key "questions" which is an array of question objects.
             Example format:
             {
@@ -203,7 +203,7 @@ app.post('/api/lessons/:lessonId/questions', authenticate, async (req, res) => {
         });
 
         const responseText = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : '';
-        
+
         const jsonStartIndex = responseText.indexOf('{');
         const jsonEndIndex = responseText.lastIndexOf('}') + 1;
 
@@ -257,25 +257,20 @@ app.post('/api/lessons/:lessonId/update-skill', authenticate, async (req, res) =
     }
 });
 
-// --- UPDATED HOMEWORK SOLVER ENDPOINT ---
-app.post('/api/homework/solve', authenticate, upload.single('homeworkImage'), async (req, res) => {
-    const { userId } = (req as any).user;
 
-    if (!req.file) {
-        return res.status(400).json({ error: 'No image file uploaded.' });
-    }
+// --- ASYNCHRONOUS HOMEWORK SOLVER ---
 
+// This function processes the job. In a real-world scenario, this would be
+// triggered by a message queue or a separate worker process.
+// For simplicity, we trigger it immediately after the job is created.
+const processHomeworkJob = async (jobId: string, imageBuffer: Buffer, imageMediaType: string, userId: string) => {
     try {
-        // Fetch user preferences
+        await pool.query("UPDATE homework_jobs SET status = 'processing' WHERE id = $1", [jobId]);
+
         const userResult = await pool.query('SELECT preferences FROM users WHERE id = $1', [userId]);
         const learningPreferences = userResult.rows[0]?.preferences || { style: "simplified" };
-        
-        // --- Get image data directly from the buffer in memory ---
-        const imageBuffer = req.file.buffer;
         const imageBase64 = imageBuffer.toString('base64');
-        const imageMediaType = req.file.mimetype;
 
-        // Construct the prompt for the multimodal AI
         const prompt = `
             You are an expert tutor. A student has sent a picture of a homework problem.
             Provide a clear, step-by-step solution to the problem in the image.
@@ -286,34 +281,78 @@ app.post('/api/homework/solve', authenticate, upload.single('homeworkImage'), as
         const aiResponse = await anthropic.messages.create({
             model: "claude-3-5-sonnet-20240620",
             max_tokens: 2048,
-            messages: [
-                {
-                    role: "user",
-                    content: [
-                        {
-                            type: "image",
-                            source: {
-                                type: "base64",
-                                media_type: imageMediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
-                                data: imageBase64,
-                            },
-                        },
-                        {
-                            type: "text",
-                            text: prompt,
-                        }
-                    ],
-                }
-            ],
+            messages: [{
+                role: "user",
+                content: [{
+                    type: "image",
+                    source: {
+                        type: "base64",
+                        media_type: imageMediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+                        data: imageBase64,
+                    },
+                }, {
+                    type: "text",
+                    text: prompt,
+                }],
+            }],
         });
 
-        const solution = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : "Sorry, I couldn't find a text solution in the response.";
-
-        res.status(200).json({ solution });
+        const solution = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : "Sorry, I couldn't find a text solution.";
+        await pool.query("UPDATE homework_jobs SET status = 'completed', solution = $1 WHERE id = $2", [solution, jobId]);
 
     } catch (error) {
-        console.error("Error solving homework:", error);
-        res.status(500).json({ error: 'Failed to solve homework problem.' });
+        console.error(`Processing failed for job ${jobId}:`, error);
+        await pool.query("UPDATE homework_jobs SET status = 'failed' WHERE id = $1", [jobId]);
+    }
+};
+
+// Endpoint 1: Submit the job
+app.post('/api/homework/submit', authenticate, upload.single('homeworkImage'), async (req, res) => {
+    const { userId } = (req as any).user;
+    if (!req.file) {
+        return res.status(400).json({ error: 'No image file uploaded.' });
+    }
+
+    try {
+        const result = await pool.query(
+            'INSERT INTO homework_jobs (user_id) VALUES ($1) RETURNING id',
+            [userId]
+        );
+        const jobId = result.rows[0].id;
+
+        // Immediately respond to the user
+        res.status(202).json({ message: 'Homework submission accepted.', jobId: jobId });
+
+        // Start processing the job in the background
+        processHomeworkJob(jobId, req.file.buffer, req.file.mimetype, userId);
+
+    } catch (error) {
+        console.error("Error submitting homework:", error);
+        res.status(500).json({ error: 'Failed to submit homework problem.' });
+    }
+});
+
+// Endpoint 2: Check the job status
+app.get('/api/homework/status/:jobId', authenticate, async (req, res) => {
+    const { jobId } = req.params;
+    const { userId } = (req as any).user;
+
+    try {
+        const result = await pool.query(
+            'SELECT status, solution FROM homework_jobs WHERE id = $1 AND user_id = $2',
+            [jobId, userId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Job not found.' });
+        }
+
+        const job = result.rows[0];
+        res.status(200).json({ status: job.status, solution: job.solution });
+
+    } catch (error) {
+        console.error(`Error fetching status for job ${jobId}:`, error);
+        res.status(500).json({ error: 'Failed to fetch job status.' });
     }
 });
 
