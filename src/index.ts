@@ -95,7 +95,7 @@ app.post('/api/login', async (req, res) => {
     }
     const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET || 'supersecretkey', { expiresIn: '1h' });
     res.json({ message: 'Login successful', token });
-  } catch (error) {
+  } catch (error).ts {
     console.error(error);
     res.status(500).json({ error: 'Internal server error.' });
   }
@@ -198,10 +198,24 @@ app.post('/api/lessons/:lessonId/questions', authenticate, async (req, res) => {
             messages: [{ role: "user", content: prompt }],
         });
 
-        const responseText = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : '{}';
-        const questionsJson = JSON.parse(responseText);
+        const responseText = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : '';
         
-        res.status(200).json(questionsJson);
+        // --- ROBUST JSON PARSING TO FIX THE 500 ERROR ---
+        const jsonStartIndex = responseText.indexOf('{');
+        const jsonEndIndex = responseText.lastIndexOf('}') + 1;
+
+        if (jsonStartIndex !== -1 && jsonEndIndex > jsonStartIndex) {
+            const jsonString = responseText.substring(jsonStartIndex, jsonEndIndex);
+            try {
+                const questionsJson = JSON.parse(jsonString);
+                res.status(200).json(questionsJson);
+            } catch (parseError) {
+                console.error("Failed to parse JSON from AI response:", parseError);
+                throw new Error("AI returned malformed JSON.");
+            }
+        } else {
+            throw new Error("Could not find a valid JSON object in the AI response.");
+        }
 
     } catch (error) {
         console.error(`Error generating questions for ${lessonId}:`, error);
