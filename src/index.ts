@@ -24,18 +24,17 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-// --- NEW, MORE EXPLICIT CORS CONFIGURATION ---
 const corsOptions = {
-  origin: '*', // Allow all domains
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Allow all standard methods
-  allowedHeaders: ['Content-Type', 'Authorization'], // Explicitly allow these headers
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 };
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // Enable pre-flight requests for all routes
+app.options('*', cors(corsOptions));
 
 app.use(express.json());
 
-// --- (Existing helper functions and middleware are unchanged) ---
+// --- (Helper functions and other endpoints remain the same) ---
 const findLessonById = (curriculums: any[], lessonId: string): any | null => {
     for (const curriculum of curriculums) {
         const subjects = curriculum.data?.subjects || [];
@@ -70,8 +69,6 @@ const authenticate = (req: Request, res: Response, next: NextFunction) => {
   }
 };
 
-
-// --- (Existing API endpoints are unchanged) ---
 app.get('/', (req, res) => {
   res.status(200).send('AiSchool Backend is running!');
 });
@@ -124,6 +121,7 @@ app.get('/api/curriculums', authenticate, async (req, res) => {
     }
 });
 
+// --- UPDATED to return keywords ---
 app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
     const { lessonId } = req.params;
     const { userId } = (req as any).user;
@@ -163,7 +161,8 @@ app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
         const firstBlock = aiResponse.content[0];
         if (firstBlock.type === 'text') {
             const lessonContent = firstBlock.text;
-            res.status(200).json({ content: lessonContent });
+            // Return both the content and the keywords
+            res.status(200).json({ content: lessonContent, keywords: lessonDetails.keywords || [] });
         } else {
             throw new Error("AI response was not in the expected text format.");
         }
@@ -174,6 +173,34 @@ app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
     }
 });
 
+// --- NEW ENDPOINT FOR TUTOR MODE ---
+app.post('/api/explain-term', authenticate, async (req, res) => {
+    const { term } = req.body;
+    if (!term) {
+        return res.status(400).json({ error: 'Term is required.' });
+    }
+
+    try {
+        const prompt = `Explain the term "${term}" in a simple, concise way for a high school student.`;
+        
+        // Using a faster, cheaper model for this simple task as per FR-19
+        const aiResponse = await anthropic.messages.create({
+            model: "claude-3-haiku-20240307", 
+            max_tokens: 200,
+            messages: [{ role: "user", content: prompt }],
+        });
+
+        const explanation = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : "Sorry, I could not generate an explanation.";
+        res.status(200).json({ explanation });
+
+    } catch (error) {
+        console.error(`Error explaining term "${term}":`, error);
+        res.status(500).json({ error: 'Failed to explain term.' });
+    }
+});
+
+
+// --- (Other endpoints like /questions, /update-skill, /homework/** remain the same) ---
 app.post('/api/lessons/:lessonId/questions', authenticate, async (req, res) => {
     const { lessonId } = req.params;
 
@@ -265,9 +292,6 @@ app.post('/api/lessons/:lessonId/update-skill', authenticate, async (req, res) =
     }
 });
 
-
-// --- ASYNCHRONOUS HOMEWORK SOLVER ---
-
 const processHomeworkJob = async (jobId: string, imageBuffer: Buffer, imageMediaType: string, userId: string) => {
     try {
         await pool.query("UPDATE homework_jobs SET status = 'processing' WHERE id = $1", [jobId]);
@@ -314,7 +338,6 @@ const processHomeworkJob = async (jobId: string, imageBuffer: Buffer, imageMedia
     }
 };
 
-// Endpoint 1: Submit the job
 app.post('/api/homework/submit', authenticate, upload.single('homeworkImage'), async (req, res) => {
     const { userId } = (req as any).user;
     if (!req.file) {
@@ -338,7 +361,6 @@ app.post('/api/homework/submit', authenticate, upload.single('homeworkImage'), a
     }
 });
 
-// Endpoint 2: Check the job status
 app.get('/api/homework/status/:jobId', authenticate, async (req, res) => {
     const { jobId } = req.params;
     const { userId } = (req as any).user;
