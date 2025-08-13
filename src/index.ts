@@ -124,7 +124,7 @@ app.get('/api/curriculums', authenticate, async (req, res) => {
     }
 });
 
-// --- UPDATED to dynamically generate keywords ---
+// --- UPDATED with a more robust parsing strategy ---
 app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
     const { lessonId } = req.params;
     const { userId } = (req as any).user;
@@ -145,23 +145,19 @@ app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
         const skillProfile = user.skill_profile || {};
         const masteryScore = skillProfile[lessonId]?.masteryScore || 0.0;
 
-        // --- THIS IS THE NEW, SMARTER PROMPT ---
+        // --- NEW, SIMPLER PROMPT ---
         const prompt = `
             Role: You are an expert teacher named ${learningPreferences.tutorPersona.name}.
             Persona: Explain in a ${learningPreferences.style} style.
             Context: The student has a current mastery level of ${masteryScore * 100}% in this lesson.
-            Task: First, provide a clear and comprehensive explanation for the lesson "${lessonDetails.name}". The lesson's main objectives are: ${lessonDetails.objectives.join(', ')}.
-            Second, identify the most important keywords or terms from the explanation you just wrote.
-            
-            Output Format: Return a single, valid JSON object. It must have two keys:
-            1. "content": A string containing the full lesson explanation in simple Markdown.
-            2. "keywords": An array of strings, where each string is an important keyword you identified.
+            Task: Provide a clear and comprehensive explanation for the lesson "${lessonDetails.name}".
+            After the explanation, on a new line, write the text "KEYWORDS:" followed by a comma-separated list of the most important terms from the lesson.
             
             Example:
-            {
-              "content": "## What is Photosynthesis?\\nPhotosynthesis is the process plants use to convert light energy into chemical energy...",
-              "keywords": ["Photosynthesis", "light energy", "chemical energy"]
-            }
+            ## What is Photosynthesis?
+            Photosynthesis is the process plants use...
+            
+            KEYWORDS: Photosynthesis, light energy, chemical energy
         `;
 
         const aiResponse = await anthropic.messages.create({
@@ -171,23 +167,20 @@ app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
         });
 
         const responseText = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : '';
-        const jsonStartIndex = responseText.indexOf('{');
-        const jsonEndIndex = responseText.lastIndexOf('}') + 1;
+        
+        // --- NEW, MORE ROBUST PARSING LOGIC ---
+        let lessonContent = responseText;
+        let keywords: string[] = [];
+        const keywordMarker = "KEYWORDS:";
+        const keywordIndex = responseText.lastIndexOf(keywordMarker);
 
-        if (jsonStartIndex !== -1 && jsonEndIndex > jsonStartIndex) {
-            const jsonString = responseText.substring(jsonStartIndex, jsonEndIndex);
-            try {
-                const lessonJson = JSON.parse(jsonString);
-                res.status(200).json({ 
-                    content: lessonJson.content || "No content generated.",
-                    keywords: lessonJson.keywords || [] 
-                });
-            } catch (parseError) {
-                throw new Error("AI returned malformed JSON for the lesson.");
-            }
-        } else {
-            throw new Error("Could not find a valid JSON object in the lesson response.");
+        if (keywordIndex !== -1) {
+            lessonContent = responseText.substring(0, keywordIndex).trim();
+            const keywordString = responseText.substring(keywordIndex + keywordMarker.length).trim();
+            keywords = keywordString.split(',').map(k => k.trim()).filter(k => k); // Clean up the keywords
         }
+
+        res.status(200).json({ content: lessonContent, keywords: keywords });
 
     } catch (error) {
         console.error(`Error generating lesson for ${lessonId}:`, error);
