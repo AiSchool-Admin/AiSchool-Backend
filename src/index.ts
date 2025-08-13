@@ -1,4 +1,4 @@
-// @ts-nocheck
+"use strict";
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import pkg from 'pg';
@@ -7,11 +7,12 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import Anthropic from '@anthropic-ai/sdk';
 import multer from 'multer';
+import redis from 'redis';
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Create a dummy Redis client for fallback
+// Create dummy Redis client for fallback
 const createDummyRedisClient = () => {
   return {
     get: async () => null,
@@ -23,19 +24,17 @@ const createDummyRedisClient = () => {
   };
 };
 
-// Initialize Redis client with error handling
+// Initialize Redis client
 let redisClient;
 try {
-  // Attempt to load the Redis module
-  const redisModule = await import('redis');
-  redisClient = redisModule.createClient({
+  redisClient = redis.createClient({
     url: process.env.REDIS_URL || 'redis://localhost:6379'
   });
   
   redisClient.on('error', (err: Error) => console.error('Redis Client Error', err));
-  await redisClient.connect();
+  redisClient.connect();
   console.log('Redis connected successfully');
-} catch (err) {
+} catch (err: any) {
   console.error('Redis initialization failed. Using dummy client:', err.message);
   redisClient = createDummyRedisClient();
 }
