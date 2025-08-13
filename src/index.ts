@@ -4,8 +4,8 @@ import pkg from 'pg';
 const { Pool } = pkg;
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-// Assume you'll add an AI client, like Anthropic for Claude
-// import Anthropic from '@anthropic-ai/sdk';
+// Import the Anthropic SDK for Claude
+import Anthropic from '@anthropic-ai/sdk';
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -18,18 +18,36 @@ const pool = new Pool({
   }
 });
 
-/*
 // --- AI Client Initialization ---
-// You would initialize your AI client here once you have the API key
+// This is now active. Make sure to set the ANTHROPIC_API_KEY environment variable.
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
-*/
 
 
 // --- Middleware ---
 app.use(cors());
 app.use(express.json());
+
+// --- Helper Function to find a lesson in the curriculum JSON ---
+const findLessonById = (curriculums: any[], lessonId: string): any | null => {
+    for (const curriculum of curriculums) {
+        const subjects = curriculum.data?.subjects || [];
+        for (const subject of subjects) {
+            const units = subject.units || [];
+            for (const unit of units) {
+                const chapters = unit.chapters || [];
+                for (const chapter of chapters) {
+                    const lessons = chapter.lessons || [];
+                    const found = lessons.find((l: any) => l.lessonId === lessonId);
+                    if (found) return found;
+                }
+            }
+        }
+    }
+    return null;
+};
+
 
 // --- Authentication Middleware ---
 const authenticate = (req: Request, res: Response, next: NextFunction) => {
@@ -105,40 +123,50 @@ app.get('/api/curriculums', authenticate, async (req, res) => {
     }
 });
 
-// --- NEW ENDPOINT TO FIX THE 404 ERROR ---
+// --- FULLY IMPLEMENTED LESSON GENERATION ENDPOINT ---
 app.post('/api/lessons/:lessonId/generate', authenticate, async (req, res) => {
     const { lessonId } = req.params;
-    // const { userId } = (req as any).user; // You can get the user ID from the token
+    const { userId } = (req as any).user;
 
     try {
-        // --- Step 1: Find the lesson details from the database ---
-        // This is a placeholder. In a real scenario, you would query your database
-        // to find the lesson's objectives, keywords, etc., based on the lessonId.
-        // For example:
-        // const lessonResult = await pool.query('SELECT ... FROM curriculums WHERE ...');
-        // const lessonDetails = findLessonInJson(lessonResult.rows, lessonId);
-        // if (!lessonDetails) {
-        //   return res.status(404).json({ error: 'Lesson details not found in curriculum.' });
-        // }
+        // --- Step 1: Fetch all necessary data in parallel ---
+        const [curriculumResult, userResult] = await Promise.all([
+            pool.query('SELECT data FROM curriculums'),
+            pool.query('SELECT preferences, skill_profile FROM users WHERE id = $1', [userId])
+        ]);
 
-        console.log(`Generating lesson for ID: ${lessonId}`);
+        // --- Step 2: Find the specific lesson and user details ---
+        const lessonDetails = findLessonById(curriculumResult.rows, lessonId);
+        if (!lessonDetails) {
+          return res.status(404).json({ error: 'Lesson details not found in curriculum.' });
+        }
+        
+        const user = userResult.rows[0];
+        const learningPreferences = user.preferences || { style: "simplified", tutorPersona: { name: "Professor Khalid" } };
+        const skillProfile = user.skill_profile || {};
+        const masteryScore = skillProfile[lessonId]?.masteryScore || 0.0;
 
-        // --- Step 2: Call the AI model to generate content ---
-        // This is where you would use the lesson details to build a prompt
-        // and send it to the Claude API via the Anthropic client.
-        /*
-        const msg = await anthropic.messages.create({
-            model: "claude-3-5-sonnet-20240620",
+        // --- Step 3: Build the dynamic prompt for the AI model ---
+        const prompt = `
+            Role: You are an expert teacher named ${learningPreferences.tutorPersona.name}.
+            Persona: Explain in a ${learningPreferences.style} style.
+            Context: The student has a current mastery level of ${masteryScore * 100}% in this lesson.
+            Task: Provide a clear and comprehensive explanation for the lesson "${lessonDetails.name}".
+            The lesson's main objectives are: ${lessonDetails.objectives.join(', ')}.
+            Focus on the core concepts and use simple analogies if possible.
+            Output Format: Provide the explanation in simple Markdown.
+        `;
+
+        // --- Step 4: Call the Claude API to generate the content ---
+        const aiResponse = await anthropic.messages.create({
+            model: "claude-3-5-sonnet-20240620", // As specified in the PRD
             max_tokens: 1024,
-            messages: [{ role: "user", content: `Explain the concept of ${lessonDetails.name}` }],
+            messages: [{ role: "user", content: prompt }],
         });
-        const lessonContent = msg.content[0].text;
-        */
-       
-        // For now, we return placeholder content to confirm the endpoint works.
-        const lessonContent = `This is the generated lesson for lesson ID: ${lessonId}. The backend endpoint is now working correctly! You can now integrate the real AI call.`;
+        
+        const lessonContent = aiResponse.content[0].text;
 
-        // --- Step 3: Send the generated content back to the app ---
+        // --- Step 5: Send the generated content back to the app ---
         res.status(200).json({ content: lessonContent });
 
     } catch (error) {
