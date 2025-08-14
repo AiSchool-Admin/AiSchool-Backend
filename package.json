@@ -1,3 +1,4 @@
+// File: package.json (Backend - Updated with new dependencies)
 {
   "name": "aischool-backend",
   "version": "1.0.0",
@@ -9,11 +10,13 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.19.0",
+    "@google/generative-ai": "^0.7.1",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
+    "node-cron": "^3.0.3",
     "pg": "^8.11.3",
     "redis": "^4.6.13"
   },
