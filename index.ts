@@ -590,3 +590,69 @@ app.post('/api/explain-term', authenticate, quotaCheck(1), async (req, res) => {
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
 });
+// ... existing code ...
+
+app.post('/api/lessons/:lessonId/questions', authenticate, quotaCheck(5), async (req, res) => {
+  const { lessonId } = req.params;
+  const { userId } = (req as any).user;
+
+  try {
+    const curriculumResult = await pool.query('SELECT data FROM curriculums');
+    const lessonDetails = findLessonById(curriculumResult.rows, lessonId);
+    if (!lessonDetails) {
+      return res.status(404).json({ error: 'Lesson details not found.' });
+    }
+
+    // Updated prompt with clear field names and structure
+    const prompt = `
+      Based on the lesson "${lessonDetails.name}" with objectives "${lessonDetails.objectives.join(', ')}", 
+      generate 3 multiple-choice questions to test understanding at different difficulty levels.
+      
+      For each question, provide:
+      - "questionText": The question text
+      - "options": Array of 4 options (strings)
+      - "correctOptionIndex": The index (0-3) of the correct option
+      
+      Return ONLY a valid JSON object with this structure:
+      {
+        "questions": [
+          {
+            "questionText": "Question text here",
+            "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+            "correctOptionIndex": 0
+          }
+        ]
+      }
+    `;
+
+    const aiResponse = await anthropic.messages.create({
+      model: "claude-3-haiku-20240307",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const responseText = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : '';
+    const jsonStartIndex = responseText.indexOf('{');
+    const jsonEndIndex = responseText.lastIndexOf('}') + 1;
+
+    if (jsonStartIndex !== -1 && jsonEndIndex > jsonStartIndex) {
+      const jsonString = responseText.substring(jsonStartIndex, jsonEndIndex);
+      try {
+        const questionsJson = JSON.parse(jsonString);
+        await updateQuota(userId, 5);
+        res.status(200).json(questionsJson);
+      } catch (parseError) {
+        console.error("Failed to parse JSON from AI response:", parseError);
+        throw new Error("AI returned malformed JSON.");
+      }
+    } else {
+      throw new Error("Could not find a valid JSON object in the AI response.");
+    }
+
+  } catch (error) {
+    console.error(`Error generating questions for ${lessonId}:`, error);
+    res.status(500).json({ error: 'Failed to generate questions.' });
+  }
+});
+
+// ... rest of the file remains the same ...
