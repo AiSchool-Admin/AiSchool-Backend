@@ -1,3 +1,4 @@
+// File: index.ts (Backend - Full Updated Code)
 "use strict";
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
@@ -8,6 +9,8 @@ import jwt from 'jsonwebtoken';
 import Anthropic from '@anthropic-ai/sdk';
 import multer from 'multer';
 import redis from 'redis';
+import cron from 'node-cron'; // Added for proactive generation (FR-17)
+import { GoogleGenerativeAI } from '@google/generative-ai'; // Added for dynamic model routing (FR-19)
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -20,7 +23,9 @@ const createDummyRedisClient = () => {
     del: async () => {},
     exists: async () => false,
     connect: async () => {},
-    on: () => {}
+    on: () => {},
+    incr: async () => {},
+    keys: async () => [],
   };
 };
 
@@ -52,6 +57,10 @@ const pool = new Pool({
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
+
+// Added for dynamic model routing (FR-19): Initialize Google Generative AI for simple tasks
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || '');
+const geminiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 // CORS configuration
 const corsOptions = {
@@ -265,13 +274,10 @@ app.post('/api/units/:unitId/diagnostic-test', authenticate, quotaCheck(5), asyn
       Format as JSON: { "questions": [ { "question": "...", "options": ["...", "..."], "answer": 0 } ] }
     `;
 
-    const aiResponse = await anthropic.messages.create({
-      model: "claude-3-haiku-20240307",
-      max_tokens: 1024,
-      messages: [{ role: "user", content: prompt }],
-    });
+    // Updated for dynamic routing (FR-19): Use Gemini for simple task (question generation)
+    const result = await geminiModel.generateContent(prompt);
+    const responseText = result.response.text();
 
-    const responseText = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : '';
     const jsonStartIndex = responseText.indexOf('{');
     const jsonEndIndex = responseText.lastIndexOf('}') + 1;
     
@@ -300,12 +306,8 @@ app.post('/api/lessons/:lessonId/generate', authenticate, quotaCheck(10), async 
   const { userId } = (req as any).user;
 
   try {
-    // Check cache first
-    const cacheKey = `lesson:${lessonId}:${userId}`;
-    const cachedLesson = await redisClient.get(cacheKey);
-    if (cachedLesson) {
-      return res.status(200).json(JSON.parse(cachedLesson));
-    }
+    // Updated for proactive caching (FR-17): Track lesson popularity
+    await redisClient.incr(`lesson_count:${lessonId}`);
 
     const [curriculumResult, userResult] = await Promise.all([
       pool.query('SELECT data FROM curriculums'),
@@ -320,7 +322,15 @@ app.post('/api/lessons/:lessonId/generate', authenticate, quotaCheck(10), async 
     const user = userResult.rows[0];
     const learningPreferences = user.preferences || { style: "simplified", tutorPersona: { name: "Professor Khalid" } };
     const skillProfile = user.skill_profile || {};
+    const confidence = skillProfile[lessonId]?.confidence || 'low';
     const masteryScore = skillProfile[lessonId]?.masteryScore || 0.0;
+
+    // Updated cache key for grouped caching (FR-17): Use confidence group instead of per-user
+    const cacheKey = `lesson:${lessonId}:group:${confidence}`;
+    const cachedLesson = await redisClient.get(cacheKey);
+    if (cachedLesson) {
+      return res.status(200).json(JSON.parse(cachedLesson));
+    }
 
     const prompt = `
       Role: You are an expert teacher named ${learningPreferences.tutorPersona.name}.
@@ -336,6 +346,7 @@ app.post('/api/lessons/:lessonId/generate', authenticate, quotaCheck(10), async 
       KEYWORDS: Photosynthesis, light energy, chemical energy
     `;
 
+    // Keep using Anthropic Sonnet for complex task (FR-19)
     const aiResponse = await anthropic.messages.create({
       model: "claude-3-5-sonnet-20240620",
       max_tokens: 1500,
@@ -380,19 +391,32 @@ app.post('/api/lessons/:lessonId/questions', authenticate, quotaCheck(5), async 
       return res.status(404).json({ error: 'Lesson details not found.' });
     }
 
+    // Updated prompt with clear field names and structure
     const prompt = `
       Based on the lesson "${lessonDetails.name}" with objectives "${lessonDetails.objectives.join(', ')}", 
       generate 3 multiple-choice questions to test understanding at different difficulty levels.
-      Format as JSON: { "questions": [ { "difficulty": "easy", "question": "...", "options": ["...", "..."], "answer": 0 } ] }
+      
+      For each question, provide:
+      - "questionText": The question text
+      - "options": Array of 4 options (strings)
+      - "correctOptionIndex": The index (0-3) of the correct option
+      
+      Return ONLY a valid JSON object with this structure:
+      {
+        "questions": [
+          {
+            "questionText": "Question text here",
+            "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+            "correctOptionIndex": 0
+          }
+        ]
+      }
     `;
 
-    const aiResponse = await anthropic.messages.create({
-      model: "claude-3-haiku-20240307",
-      max_tokens: 1024,
-      messages: [{ role: "user", content: prompt }],
-    });
+    // Updated for dynamic routing (FR-19): Use Gemini for simple task (question generation)
+    const result = await geminiModel.generateContent(prompt);
+    const responseText = result.response.text();
 
-    const responseText = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : '';
     const jsonStartIndex = responseText.indexOf('{');
     const jsonEndIndex = responseText.lastIndexOf('}') + 1;
 
@@ -438,8 +462,9 @@ app.post('/api/lessons/:lessonId/update-skill', authenticate, async (req, res) =
 
     await pool.query('UPDATE users SET skill_profile = $1 WHERE id = $2', [JSON.stringify(skillProfile), userId]);
     
-    // Invalidate cached lesson
-    await redisClient.del(`lesson:${lessonId}:${userId}`);
+    // Invalidate cached lesson (updated for group cache)
+    const confidence = skillProfile[lessonId].confidence;
+    await redisClient.del(`lesson:${lessonId}:group:${confidence}`);
     
     res.status(200).json({ message: 'Skill profile updated successfully.' });
 
@@ -495,6 +520,7 @@ const processHomeworkJob = async (jobId: string, imageBuffer: Buffer, imageMedia
       Explain everything in a ${learningPreferences.style} style and format your response using simple Markdown.
     `;
 
+    // Keep using Anthropic Sonnet for complex multimodal task (FR-19)
     const aiResponse = await anthropic.messages.create({
       model: "claude-3-5-sonnet-20240620",
       max_tokens: 2048,
@@ -548,111 +574,88 @@ app.get('/api/homework/status/:jobId', authenticate, async (req, res) => {
   }
 });
 
-app.post('/api/explain-term', authenticate, quotaCheck(1), async (req, res) => {
-  const { term } = req.body;
-  const { userId } = (req as any).user;
-  
-  if (!term) {
-    return res.status(400).json({ error: 'Term is required.' });
-  }
-
+// Proactive Generation Cron Job (FR-17): Nightly pre-generation of popular lessons
+cron.schedule('0 0 * * *', async () => {
+  console.log('Running nightly proactive lesson generation...');
   try {
-    // Check cache first
-    const cacheKey = `term:${term}`;
-    const cachedExplanation = await redisClient.get(cacheKey);
-    if (cachedExplanation) {
-      await updateQuota(userId, 1);
-      return res.status(200).json({ explanation: cachedExplanation });
+    const countKeys = await redisClient.keys('lesson_count:*');
+    if (countKeys.length === 0) return;
+
+    const lessonCounts = await Promise.all(
+      countKeys.map(async (key) => {
+        const count = parseInt(await redisClient.get(key) || '0', 10);
+        const lessonId = key.split(':')[1];
+        return { lessonId, count };
+      })
+    );
+
+    // Sort by count descending and take top 10
+    const popularLessons = lessonCounts
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    const curriculumResult = await pool.query('SELECT data FROM curriculums');
+    const defaultPreferences = { style: "simplified", tutorPersona: { name: "Professor Khalid" } };
+    const confidenceLevels = ['low', 'medium', 'high'];
+    const masteryMap: { [key: string]: number } = { low: 0.3, medium: 0.6, high: 0.9 };
+
+    for (const { lessonId } of popularLessons) {
+      const lessonDetails = findLessonById(curriculumResult.rows, lessonId);
+      if (!lessonDetails) continue;
+
+      for (const confidence of confidenceLevels) {
+        const cacheKey = `lesson:${lessonId}:group:${confidence}`;
+        const cached = await redisClient.get(cacheKey);
+        if (cached) continue; // Skip if already cached
+
+        const masteryScore = masteryMap[confidence];
+        const prompt = `
+          Role: You are an expert teacher named ${defaultPreferences.tutorPersona.name}.
+          Persona: Explain in a ${defaultPreferences.style} style.
+          Context: The student has a current mastery level of ${masteryScore * 100}% in this lesson.
+          Task: Provide a clear and comprehensive explanation for the lesson "${lessonDetails.name}".
+          After the explanation, on a new line, write the text "KEYWORDS:" followed by a comma-separated list of the most important terms from the lesson.
+          
+          Example:
+          ## What is Photosynthesis?
+          Photosynthesis is the process plants use...
+          
+          KEYWORDS: Photosynthesis, light energy, chemical energy
+        `;
+
+        const aiResponse = await anthropic.messages.create({
+          model: "claude-3-5-sonnet-20240620",
+          max_tokens: 1500,
+          messages: [{ role: "user", content: prompt }],
+        });
+
+        const responseText = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : '';
+        
+        let lessonContent = responseText;
+        let keywords: string[] = [];
+        const keywordMarker = "KEYWORDS:";
+        const keywordIndex = responseText.lastIndexOf(keywordMarker);
+
+        if (keywordIndex !== -1) {
+          lessonContent = responseText.substring(0, keywordIndex).trim();
+          const keywordString = responseText.substring(keywordIndex + keywordMarker.length).trim();
+          keywords = keywordString.split(',').map(k => k.trim()).filter(k => k);
+        }
+
+        const responseData = { content: lessonContent, keywords };
+        await redisClient.setEx(cacheKey, 86400, JSON.stringify(responseData)); // Cache for 24 hours
+      }
     }
 
-    const prompt = `Explain the term "${term}" in a simple, concise way for a high school student.`;
-    
-    const aiResponse = await anthropic.messages.create({
-      model: "claude-3-haiku-20240307", 
-      max_tokens: 200,
-      messages: [{ role: "user", content: prompt }],
-    });
+    // Optional: Reset counts after pre-generation if desired
+    // for (const key of countKeys) await redisClient.del(key);
 
-    const explanation = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : "Sorry, I could not generate an explanation.";
-    
-    // Cache result
-    await redisClient.setEx(cacheKey, 86400, explanation); // Cache for 24 hours
-    await updateQuota(userId, 1);
-    
-    res.status(200).json({ explanation });
-
+    console.log('Proactive generation completed.');
   } catch (error) {
-    console.error(`Error explaining term "${term}":`, error);
-    res.status(500).json({ error: 'Failed to explain term.' });
+    console.error('Proactive generation error:', error);
   }
 });
 
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
 });
-// ... existing code ...
-
-app.post('/api/lessons/:lessonId/questions', authenticate, quotaCheck(5), async (req, res) => {
-  const { lessonId } = req.params;
-  const { userId } = (req as any).user;
-
-  try {
-    const curriculumResult = await pool.query('SELECT data FROM curriculums');
-    const lessonDetails = findLessonById(curriculumResult.rows, lessonId);
-    if (!lessonDetails) {
-      return res.status(404).json({ error: 'Lesson details not found.' });
-    }
-
-    // Updated prompt with clear field names and structure
-    const prompt = `
-      Based on the lesson "${lessonDetails.name}" with objectives "${lessonDetails.objectives.join(', ')}", 
-      generate 3 multiple-choice questions to test understanding at different difficulty levels.
-      
-      For each question, provide:
-      - "questionText": The question text
-      - "options": Array of 4 options (strings)
-      - "correctOptionIndex": The index (0-3) of the correct option
-      
-      Return ONLY a valid JSON object with this structure:
-      {
-        "questions": [
-          {
-            "questionText": "Question text here",
-            "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
-            "correctOptionIndex": 0
-          }
-        ]
-      }
-    `;
-
-    const aiResponse = await anthropic.messages.create({
-      model: "claude-3-haiku-20240307",
-      max_tokens: 1024,
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    const responseText = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : '';
-    const jsonStartIndex = responseText.indexOf('{');
-    const jsonEndIndex = responseText.lastIndexOf('}') + 1;
-
-    if (jsonStartIndex !== -1 && jsonEndIndex > jsonStartIndex) {
-      const jsonString = responseText.substring(jsonStartIndex, jsonEndIndex);
-      try {
-        const questionsJson = JSON.parse(jsonString);
-        await updateQuota(userId, 5);
-        res.status(200).json(questionsJson);
-      } catch (parseError) {
-        console.error("Failed to parse JSON from AI response:", parseError);
-        throw new Error("AI returned malformed JSON.");
-      }
-    } else {
-      throw new Error("Could not find a valid JSON object in the AI response.");
-    }
-
-  } catch (error) {
-    console.error(`Error generating questions for ${lessonId}:`, error);
-    res.status(500).json({ error: 'Failed to generate questions.' });
-  }
-});
-
-// ... rest of the file remains the same ...
